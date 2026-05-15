@@ -1,0 +1,279 @@
+# ==============================================================================
+# ABGABE 3: ARDL-MODELLIERUNG BAUAKTIVITÄTEN BELGIEN
+# Vollständiges Analyseskript
+# ==============================================================================
+
+set verbose off
+include DynMultCalc.gfn
+
+open data_beg.gdt
+
+# ==============================================================================
+# 1. DATENAUFBEREITUNG UND DESKRIPTIVE STATISTIK
+# ==============================================================================
+
+summary permits houseprice income unemployment interest
+
+# Korrelationsmatrix
+corr permits houseprice income unemployment interest
+
+# Zeitreihenplots
+gnuplot permits --time-series --with-lines \
+    --output="plot_permits.png" \
+    {set title "Baugenehmigungen in Belgien (2000-2023)"; \
+     set ylabel "Index (2021=100)"; \
+     set xlabel "Jahr";}
+
+gnuplot interest --time-series --with-lines \
+    --output="plot_interest.png" \
+    {set title "Zinssatz für Wohnungsbaukredite in Belgien"; \
+     set ylabel "Prozent"; \
+     set xlabel "Jahr";}
+
+gnuplot income --time-series --with-lines \
+    --output="plot_income.png" \
+    {set title "Reales verfügbares Haushaltseinkommen in Belgien"; \
+     set ylabel "Index"; \
+     set xlabel "Jahr";}
+
+gnuplot houseprice --time-series --with-lines \
+    --output="plot_houseprice.png" \
+    {set title "Hauspreise in Belgien (preisbereinigt)"; \
+     set ylabel "Index"; \
+     set xlabel "Jahr";}
+
+gnuplot unemployment --time-series --with-lines \
+    --output="plot_unemployment.png" \
+    {set title "Arbeitslosenquote in Belgien"; \
+     set ylabel "Prozent der Erwerbsbevölkerung"; \
+     set xlabel "Jahr";}
+
+# Kombinierter Plot: permits, interest, income
+gnuplot permits interest income --time-series --with-lines \
+    --output="plot_kombiniert.png" \
+    {set title "Baugenehmigungen, Zinsen und Einkommen in Belgien"; \
+     set ylabel "Index bzw. Prozent"; \
+     set xlabel "Jahr"; \
+     set key outside right top;}
+
+# ==============================================================================
+# 2. STATIONARITÄTSTESTS
+# ==============================================================================
+
+# ADF-Tests für alle Variablen (Niveau)
+adf 12 permits --c --test-down
+adf 12 houseprice --c --test-down
+adf 12 income --c --test-down
+adf 12 unemployment --c --test-down
+adf 12 interest --c --test-down
+
+# Erste Differenzen bilden
+series d_permits = diff(permits)
+series d_houseprice = diff(houseprice)
+series d_income = diff(income)
+series d_unemployment = diff(unemployment)
+series d_interest = diff(interest)
+
+# ADF-Tests für erste Differenzen
+adf 12 d_permits --c --test-down
+adf 12 d_houseprice --c --test-down
+adf 12 d_income --c --test-down
+adf 12 d_unemployment --c --test-down
+adf 12 d_interest --c --test-down
+
+# ==============================================================================
+# 3. ARDL-MODELLIERUNG - VERSCHIEDENE SPEZIFIKATIONEN
+# ==============================================================================
+
+# Modell 1: ARDL(1,1,1) - Basismodell
+ols permits const permits(-1) interest interest(-1) income income(-1)
+modeltab add
+series resid1 = $uhat
+
+# Modell 2: ARDL(2,2,2) - Erweiterte Lag-Struktur
+ols permits const permits(-1) permits(-2) interest interest(-1) interest(-2) income income(-1) income(-2)
+modeltab add
+series resid2 = $uhat
+
+# Modell 3: ARDL(3,3,3) - Maximale Lag-Struktur
+ols permits const permits(-1) permits(-2) permits(-3) interest interest(-1) interest(-2) interest(-3) income income(-1) income(-2) income(-3)
+modeltab add
+series resid3 = $uhat
+
+# Modell 4: ARDL(2,2,2) mit houseprice
+ols permits const permits(-1) permits(-2) interest interest(-1) interest(-2) income income(-1) income(-2) houseprice houseprice(-1) houseprice(-2)
+modeltab add
+series resid4 = $uhat
+
+# Modell 5: ARDL(2,2,2) mit unemployment
+ols permits const permits(-1) permits(-2) interest interest(-1) interest(-2) income income(-1) income(-2) unemployment unemployment(-1) unemployment(-2)
+modeltab add
+series resid5 = $uhat
+
+# Modelltabelle anzeigen
+modeltab show
+
+# ==============================================================================
+# 4. SPEZIFIKATIONSTESTS FÜR BESTES MODELL (ARDL 2,2,2)
+# ==============================================================================
+
+# Nochmal Modell 2 schätzen für detaillierte Tests
+ols permits const permits(-1) permits(-2) interest interest(-1) interest(-2) income income(-1) income(-2)
+
+# Autokorrelationstest (LM-Test für Autokorrelation)
+modtest 1 --autocorr
+modtest 2 --autocorr
+modtest 4 --autocorr
+modtest 12 --autocorr
+
+# Test auf funktionale Form (RESET)
+reset --squares-only
+
+# Test auf Heteroskedastizität
+modtest --white
+
+# QLR-Test auf Strukturbruch (Quandt Likelihood Ratio)
+# Hinweis: Für detaillierten QLR-Test manuell über GUI: Tests > Strukturbruch
+printf "\nHinweis: QLR-Test kann über GUI durchgeführt werden\n"
+printf "Tests > Chow-Test > QLR-Test\n"
+
+# Residuenanalyse
+gnuplot resid2 --time-series --with-lines \
+    --output="plot_residuen.png" \
+    {set title "Residuen des ARDL(2,2,2) Modells"; \
+     set ylabel "Residuen"; \
+     set xlabel "Beobachtung"; \
+     set yrange [-50:50];}
+
+# ACF und PACF der Residuen
+corrgm resid2 12 --plot="plot_acf_residuen.png"
+
+# Normalitätstest
+normtest resid2
+
+# ==============================================================================
+# 5. OPTIMALE MODELLSPEZIFIKATION MIT INFORMATIONSKRITERIEN
+# ==============================================================================
+
+# Systematische Suche nach optimaler Lag-Struktur
+loop p=1..4 --quiet
+    loop q1=0..4 --quiet
+        loop q2=0..4 --quiet
+            catch ols permits const permits(-1 to -$p) interest(-0 to -$q1) income(-0 to -$q2) --quiet
+            if $error == 0
+                scalar aic_value = $aic
+                scalar bic_value = $bic
+                printf "ARDL(%d,%d,%d): AIC=%.4f, BIC=%.4f\n", $p, $q1, $q2, aic_value, bic_value
+            endif
+        endloop
+    endloop
+endloop
+
+# ==============================================================================
+# 6. FINALE MODELLSPEZIFIKATION
+# ==============================================================================
+
+ols permits const permits(-1) permits(-2) interest interest(-1) interest(-2) income income(-1) income(-2)
+
+# Koeffizienten speichern
+matrix coeff = $coeff
+scalar alpha1 = coeff[2]
+scalar alpha2 = coeff[3]
+scalar beta0_int = coeff[4]
+scalar beta1_int = coeff[5]
+scalar beta2_int = coeff[6]
+scalar beta0_inc = coeff[7]
+scalar beta1_inc = coeff[8]
+scalar beta2_inc = coeff[9]
+
+# ==============================================================================
+# 7. LANGFRISTMULTIPLIKATOREN (MANUELLE BERECHNUNG)
+# ==============================================================================
+
+# Koeffizienten speichern
+matrix coeff = $coeff
+scalar alpha1 = coeff[2]
+scalar alpha2 = coeff[3]
+scalar beta0_int = coeff[4]
+scalar beta1_int = coeff[5]
+scalar beta2_int = coeff[6]
+scalar beta0_inc = coeff[7]
+scalar beta1_inc = coeff[8]
+scalar beta2_inc = coeff[9]
+
+# Manuelle Berechnung zur Kontrolle
+scalar LR_interest_manual = (beta0_int + beta1_int + beta2_int) / (1 - alpha1 - alpha2)
+scalar LR_income_manual = (beta0_inc + beta1_inc + beta2_inc) / (1 - alpha1 - alpha2)
+
+printf "\n=== LANGFRISTMULTIPLIKATOREN (MANUELL) ===\n"
+printf "Interest: %.4f\n", LR_interest_manual
+printf "Income: %.4f\n", LR_income_manual
+
+# Signifikanztests
+restrict
+    b[interest] + b[interest_1] + b[interest_2] = 0
+end restrict
+
+ols permits const permits(-1) permits(-2) interest interest(-1) interest(-2) income income(-1) income(-2)
+restrict
+    b[income] + b[income_1] + b[income_2] = 0
+end restrict
+
+# ==============================================================================
+# 8. DYNAMISCHE MULTIPLIKATOREN MIT DYNMULTCALC
+# ==============================================================================
+
+# Finale Modellspezifikation nochmal schätzen
+ols permits const permits(-1) permits(-2) interest interest(-1) interest(-2) income income(-1) income(-2)
+
+# Dynamische Multiplikatoren für interest berechnen
+scalar horizon = 48
+scalar cumulate = 1
+bundle mult_interest = multipliers($model, "interest", horizon)
+multi_print(mult_interest)
+multi_plot(mult_interest, cumulate, 0.90, "plot_mult_interest.png")
+
+# Dynamische Multiplikatoren für income berechnen
+bundle mult_income = multipliers($model, "income", horizon)
+multi_print(mult_income)
+multi_plot(mult_income, cumulate, 0.90, "plot_mult_income.png")
+
+# Langfristeffekte berechnen und ausgeben
+bundle lr_effects = long_run_effects($model)
+long_run_print(lr_effects)
+
+# ==============================================================================
+# 9. GRANGER-KAUSALITÄTSTESTS
+# ==============================================================================
+
+# Interest → permits
+var 4 permits interest --lagselect
+var 4 permits interest
+
+# Granger-Test: Interest verursacht permits (direkt aus VAR-Output)
+# F(4, 275) = 2.6517, p = 0.0336 ** → SIGNIFIKANT!
+
+# Income → permits  
+var 4 permits income --lagselect
+var 4 permits income
+# Granger-Test-Ergebnisse in VAR-Output (F-Tests auf Nullrestriktionen)
+
+# Houseprice → permits
+var 4 permits houseprice --lagselect
+var 4 permits houseprice
+# Granger-Test-Ergebnisse in VAR-Output (F-Tests auf Nullrestriktionen)
+
+# ==============================================================================
+# 10. ROBUSTHEITSCHECKS
+# ==============================================================================
+
+# Subperiode 2000-2019 (vor COVID)
+smpl 2000:01 2019:12
+ols permits const permits(-1) permits(-2) interest interest(-1) interest(-2) income income(-1) income(-2)
+
+# Subperiode 2010-2023 (nach Finanzkrise)
+smpl 2010:01 2023:12
+ols permits const permits(-1) permits(-2) interest interest(-1) interest(-2) income income(-1) income(-2)
+
+# Zurück zur vollen Stichprobe
+smpl full
